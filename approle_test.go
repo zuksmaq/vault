@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zuksmaq/vault"
@@ -18,14 +19,16 @@ type loginRequest struct {
 }
 
 // newVault starts a Vault answering logins with login and reads with read,
-// and returns it alongside a count of the logins it served.
-func newVault(t *testing.T, login, read http.HandlerFunc) (address string, logins *int) {
+// and returns it alongside a count of the logins it served. The count is
+// atomic because concurrent readers meeting an expired token log in from
+// several goroutines at once.
+func newVault(t *testing.T, login, read http.HandlerFunc) (address string, logins *atomic.Int64) {
 	t.Helper()
 
-	count := 0
+	var count atomic.Int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, r *http.Request) {
-		count++
+		count.Add(1)
 		login(w, r)
 	})
 	mux.HandleFunc("/v1/secret/data/", read)
@@ -70,8 +73,8 @@ func TestNewLogsInWithAppRole(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if *logins != 1 {
-		t.Errorf("logins = %d, want 1", *logins)
+	if got := logins.Load(); got != 1 {
+		t.Errorf("logins = %d, want 1", got)
 	}
 	want := loginRequest{RoleID: "role-id", SecretID: "secret-id"}
 	if got != want {
@@ -105,6 +108,27 @@ func TestNewRejectsRefusedAppRole(t *testing.T) {
 	})
 	if !errors.Is(err, vault.ErrAuthFailed) {
 		t.Fatalf("New() error = %v, want %v", err, vault.ErrAuthFailed)
+	}
+}
+
+func TestNewDoesNotBlameCredentialsForATransportFailure(t *testing.T) {
+	t.Parallel()
+
+	// A Vault that never answers rejected nothing, so reporting the
+	// credential as refused would make a network fault unactionable.
+	srv := httptest.NewServer(nil)
+	address := srv.URL
+	srv.Close()
+
+	_, err := vault.New(vault.Config{
+		Address: address,
+		AppRole: vault.AppRole{RoleID: "role-id", SecretID: "secret-id"},
+	})
+	if err == nil {
+		t.Fatal("New() error = nil, want a transport failure")
+	}
+	if errors.Is(err, vault.ErrAuthFailed) {
+		t.Errorf("New() error = %v, want it not to claim the credential was refused", err)
 	}
 }
 

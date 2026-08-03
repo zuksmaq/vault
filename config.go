@@ -33,8 +33,8 @@ type AppRole struct {
 	// never logged either.
 	RoleID string
 
-	// SecretID is the role's credential. It expires, so a client holding
-	// one re-authenticates rather than failing permanently.
+	// SecretID is the role's credential. It is exchanged for a token at
+	// construction.
 	SecretID string
 }
 
@@ -44,42 +44,22 @@ func (r AppRole) supplied() bool {
 	return r != AppRole{}
 }
 
-// Validate reports whether the config carries the mandatory fields.
+// Validate reports whether the config carries the mandatory fields and a
+// coherent credential. It judges the config alone: a client built with
+// WithAuthMethod carries its credential outside the config, so New is the
+// authority on whether a credential was supplied at all.
 func (c Config) Validate() error {
-	return c.validate(false)
-}
-
-// validate reports whether the config carries the mandatory fields, given
-// whether an option supplied the credential instead. Only New knows that,
-// because options are applied after the config is read.
-func (c Config) validate(hasAuthMethod bool) error {
 	if c.Address == "" {
 		return fmt.Errorf("%w: address is required", ErrInvalidConfig)
 	}
 	if c.AppRole.supplied() && (c.AppRole.RoleID == "" || c.AppRole.SecretID == "") {
 		return fmt.Errorf("%w: an approle needs both a role id and a secret id", ErrInvalidConfig)
 	}
-
-	credentials := 0
-	if c.Token != "" {
-		credentials++
+	// Which credential is in use must never be a guess.
+	if c.Token != "" && c.AppRole.supplied() {
+		return fmt.Errorf("%w: a static token and an approle were both supplied, want one", ErrInvalidConfig)
 	}
-	if c.AppRole.supplied() {
-		credentials++
-	}
-	if hasAuthMethod {
-		credentials++
-	}
-
-	switch credentials {
-	case 1:
-		return nil
-	case 0:
-		return fmt.Errorf("%w: a static token or an approle is required", ErrInvalidConfig)
-	default:
-		// Which credential is in use must never be a guess.
-		return fmt.Errorf("%w: %d credentials supplied, want exactly one", ErrInvalidConfig, credentials)
-	}
+	return nil
 }
 
 // mountPoint returns the configured mount point, or the default.

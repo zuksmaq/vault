@@ -55,6 +55,17 @@ func TestWithAuthMethodSuppliesTheCredential(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsAConfigWhoseCredentialComesFromAnOption(t *testing.T) {
+	t.Parallel()
+
+	// A caller pre-flighting the config must not be told a setup New
+	// accepts is invalid.
+	cfg := vault.Config{Address: "https://vault.example.com"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() error = %v, want nil", err)
+	}
+}
+
 func TestWithAuthMethodIsAmbiguousAlongsideAConfigCredential(t *testing.T) {
 	t.Parallel()
 
