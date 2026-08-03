@@ -10,8 +10,6 @@ type Option func(*Client)
 // values, secret keys and role IDs never are.
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *Client) {
-		if logger != nil {
-			c.logger = logger
-		}
+		c.logger = logger
 	}
 }

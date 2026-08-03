@@ -63,21 +63,20 @@ func (c *Client) GetSecrets(ctx context.Context, path string) (map[string]string
 	}
 
 	// The count is safe to log; the keys it counts are not.
-	c.logger.DebugContext(ctx, "read secret", "path", path, "values", len(secrets))
+	c.logger.DebugContext(ctx, "read secret",
+		"path", path, "mount", c.mountPoint, "values", len(secrets))
 	return secrets, nil
 }
 
 // read returns the raw secret values stored at path. Failures are
 // returned rather than logged, so that a caller reports them once.
 func (c *Client) read(ctx context.Context, path string) (map[string]any, error) {
-	c.logger.DebugContext(ctx, "reading secret", "path", path, "mount", c.mountPoint)
-
 	secret, err := c.api.Logical().ReadWithContext(ctx, c.dataPath(path))
 	if err != nil {
 		// A failure Vault owns is worth retrying; a transport failure is
 		// wrapped intact so a timeout still looks like a timeout.
 		var respErr *api.ResponseError
-		if errors.As(err, &respErr) && respErr.StatusCode >= http.StatusInternalServerError {
+		if errors.As(err, &respErr) && isVaultSideFailure(respErr.StatusCode) {
 			return nil, fmt.Errorf("%w: reading %q: %w", ErrUnavailable, path, err)
 		}
 		return nil, fmt.Errorf("reading %q: %w", path, err)
@@ -101,6 +100,23 @@ func (c *Client) read(ctx context.Context, path string) (map[string]any, error) 
 		return nil, fmt.Errorf("%w: %q is not a kv v2 secret", ErrUnexpectedResponse, path)
 	}
 	return data, nil
+}
+
+// isVaultSideFailure reports whether status describes a failure Vault
+// owns, which vault/api has already retried and which may therefore be
+// worth retrying again. It deliberately mirrors what that library treats
+// as transient: 501 means Vault will never serve the request, so it is
+// not retried there and is not a temporary failure here.
+func isVaultSideFailure(status int) bool {
+	switch status {
+	case http.StatusPreconditionFailed, http.StatusTooManyRequests:
+		// A stale read on a performance replica, and rate limiting.
+		return true
+	case http.StatusNotImplemented:
+		return false
+	default:
+		return status >= http.StatusInternalServerError
+	}
 }
 
 // dataPath assembles the full read path for a secret path.

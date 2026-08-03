@@ -14,7 +14,9 @@ var (
 	// this client does not understand.
 	ErrUnexpectedResponse = errors.New("unexpected response")
 
-	// ErrUnavailable reports that Vault failed on its own side, after
-	// vault/api exhausted its retries. Retrying may be worthwhile.
+	// ErrUnavailable reports a failure Vault owns and may recover from —
+	// sealed, rate limiting, or a stale read on a replica. vault/api has
+	// already retried by the time this surfaces, so retrying again is a
+	// judgement the caller makes.
 	ErrUnavailable = errors.New("vault unavailable")
 )

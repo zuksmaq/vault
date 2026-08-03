@@ -11,25 +11,32 @@ import (
 	"github.com/zuksmaq/vault"
 )
 
-// countingHandler records how many log records it is asked to handle.
+// countingHandler records how many log records it is asked to handle. It
+// implements slog.Handler outright rather than embedding one, so that
+// records routed through With or WithGroup are still counted.
 type countingHandler struct {
-	slog.Handler
 	records int
 }
 
 func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
 
-func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+func (h *countingHandler) Handle(context.Context, slog.Record) error {
 	h.records++
 	return nil
 }
+
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *countingHandler) WithGroup(string) slog.Handler { return h }
 
 // TestClientIsSilentWithoutLogger pins that a client given no logger
 // writes nowhere at all — including the package-level default logger,
 // which a library must never borrow.
 func TestClientIsSilentWithoutLogger(t *testing.T) {
-	counter := &countingHandler{Handler: slog.NewTextHandler(&bytes.Buffer{}, nil)}
+	counter := &countingHandler{}
+	restore := slog.Default()
 	slog.SetDefault(slog.New(counter))
+	t.Cleanup(func() { slog.SetDefault(restore) })
 
 	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "missing") {
@@ -51,9 +58,10 @@ func TestClientIsSilentWithoutLogger(t *testing.T) {
 	}
 }
 
-// TestLoggerNeverRecordsSecrets pins that enabling debug logging does not
-// leak the things Vault exists to protect.
-func TestLoggerNeverRecordsSecrets(t *testing.T) {
+// TestLoggerRecordsPathsButNeverSecrets pins both halves of the logging
+// contract: a caller who opts in sees the path and the outcome, and
+// enabling debug logging never leaks what Vault exists to protect.
+func TestLoggerRecordsPathsButNeverSecrets(t *testing.T) {
 	t.Parallel()
 
 	var logged bytes.Buffer
@@ -67,34 +75,13 @@ func TestLoggerNeverRecordsSecrets(t *testing.T) {
 		t.Fatalf("GetSecrets() error = %v", err)
 	}
 
-	if logged.Len() == 0 {
-		t.Fatal("logger recorded nothing, so this test would pass vacuously")
+	if !strings.Contains(logged.String(), "app/config") {
+		t.Errorf("log records do not mention the secret path:\n%s", logged.String())
 	}
 
 	for _, secret := range []string{"totallyDistinctKey", "totallyDistinctValue"} {
 		if strings.Contains(logged.String(), secret) {
 			t.Errorf("log records contain %q:\n%s", secret, logged.String())
 		}
-	}
-}
-
-// TestLoggerRecordsThePath pins the other half: paths and outcomes are
-// exactly what a caller enabling debug logging is entitled to see.
-func TestLoggerRecordsThePath(t *testing.T) {
-	t.Parallel()
-
-	var logged bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
-		writeSecret(t, w, `{"username":"app"}`)
-	}, vault.WithLogger(logger))
-
-	if _, err := client.GetSecrets(context.Background(), "app/config"); err != nil {
-		t.Fatalf("GetSecrets() error = %v", err)
-	}
-
-	if !strings.Contains(logged.String(), "app/config") {
-		t.Errorf("log records do not mention the secret path:\n%s", logged.String())
 	}
 }

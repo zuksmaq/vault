@@ -15,13 +15,18 @@ func TestGetSecretsServerFailureIsUnavailable(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		status int
+		name        string
+		status      int
+		unavailable bool
 	}{
-		{name: "internal server error", status: http.StatusInternalServerError},
-		{name: "bad gateway", status: http.StatusBadGateway},
-		{name: "service unavailable", status: http.StatusServiceUnavailable},
-		{name: "sealed", status: http.StatusServiceUnavailable},
+		{name: "internal server error", status: http.StatusInternalServerError, unavailable: true},
+		{name: "bad gateway", status: http.StatusBadGateway, unavailable: true},
+		{name: "sealed or standby", status: http.StatusServiceUnavailable, unavailable: true},
+		{name: "gateway timeout", status: http.StatusGatewayTimeout, unavailable: true},
+		{name: "rate limited", status: http.StatusTooManyRequests, unavailable: true},
+		{name: "stale read on a replica", status: http.StatusPreconditionFailed, unavailable: true},
+		// Vault will never serve this, so it is not a passing failure.
+		{name: "not implemented", status: http.StatusNotImplemented, unavailable: false},
 	}
 
 	for _, tt := range tests {
@@ -33,8 +38,12 @@ func TestGetSecretsServerFailureIsUnavailable(t *testing.T) {
 			})
 
 			_, err := client.GetSecrets(context.Background(), "app/config")
-			if !errors.Is(err, vault.ErrUnavailable) {
-				t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrUnavailable)
+			if err == nil {
+				t.Fatal("GetSecrets() error = nil, want an error")
+			}
+			if got := errors.Is(err, vault.ErrUnavailable); got != tt.unavailable {
+				t.Fatalf("errors.Is(err, ErrUnavailable) = %v, want %v; err = %v",
+					got, tt.unavailable, err)
 			}
 		})
 	}
