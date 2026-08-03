@@ -45,11 +45,7 @@ func (c *Client) GetSecrets(ctx context.Context, path string) (map[string]string
 
 	secrets := make(map[string]string, len(data))
 	for key, value := range data {
-		coerced, err := coerce(value)
-		if err != nil {
-			return nil, fmt.Errorf("%w: reading %q: %w", ErrUnexpectedResponse, path, err)
-		}
-		secrets[key] = coerced
+		secrets[key] = coerce(value)
 	}
 	return secrets, nil
 }
@@ -64,7 +60,17 @@ func (c *Client) read(ctx context.Context, path string) (map[string]any, error) 
 		return nil, fmt.Errorf("%w: no secret at %q", ErrNotFound, path)
 	}
 
-	data, ok := secret.Data["data"].(map[string]any)
+	raw, ok := secret.Data["data"]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q is not a kv v2 secret", ErrUnexpectedResponse, path)
+	}
+	// A deleted secret keeps its metadata, so Vault answers with a null
+	// body rather than nothing at all.
+	if raw == nil {
+		return nil, fmt.Errorf("%w: no secret at %q", ErrNotFound, path)
+	}
+
+	data, ok := raw.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q is not a kv v2 secret", ErrUnexpectedResponse, path)
 	}
@@ -78,14 +84,12 @@ func (c *Client) dataPath(path string) string {
 
 // coerce renders a secret value as a string: strings pass through, and
 // everything else keeps its JSON form.
-func coerce(value any) (string, error) {
+func coerce(value any) string {
 	if s, ok := value.(string); ok {
-		return s, nil
+		return s
 	}
 
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
+	// The value was decoded from JSON, so it can always be encoded again.
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }

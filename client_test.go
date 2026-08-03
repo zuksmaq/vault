@@ -10,31 +10,50 @@ import (
 	"github.com/zuksmaq/vault"
 )
 
-// kvEnvelope writes the KV v2 read response envelope around the given
-// secret body.
-func kvEnvelope(t *testing.T, w http.ResponseWriter, body string) {
+// newClient starts a Vault answering with handler and returns a client
+// pointed at it.
+func newClient(t *testing.T, cfg vault.Config, handler http.HandlerFunc) *vault.Client {
+	t.Helper()
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	cfg.Address = srv.URL
+	cfg.Token = "s.token"
+
+	client, err := vault.New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return client
+}
+
+// writeJSON answers with body as a JSON response.
+func writeJSON(t *testing.T, w http.ResponseWriter, status int, body string) {
 	t.Helper()
 
 	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write([]byte(`{"data":{"data":` + body + `,"metadata":{"version":1}}}`)); err != nil {
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(body)); err != nil {
 		t.Errorf("writing response: %v", err)
 	}
+}
+
+// writeSecret answers with the KV v2 read envelope around body.
+func writeSecret(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+
+	writeJSON(t, w, http.StatusOK, `{"data":{"data":`+body+`,"metadata":{"version":1}}}`)
 }
 
 func TestGetSecretsReadsValues(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		kvEnvelope(t, w, `{"username":"app","password":"hunter2"}`)
-	}))
-	defer srv.Close()
-
-	client, err := vault.New(vault.Config{Address: srv.URL, Token: "s.token"})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+		writeSecret(t, w, `{"username":"app","password":"hunter2"}`)
+	})
 
 	got, err := client.GetSecrets(context.Background(), "app/config")
 	if err != nil {
@@ -60,20 +79,10 @@ func TestGetSecretsUsesConfiguredMountPoint(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newClient(t, vault.Config{MountPoint: "kv"}, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		kvEnvelope(t, w, `{"username":"app"}`)
-	}))
-	defer srv.Close()
-
-	client, err := vault.New(vault.Config{
-		Address:    srv.URL,
-		MountPoint: "kv",
-		Token:      "s.token",
+		writeSecret(t, w, `{"username":"app"}`)
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
 
 	if _, err := client.GetSecrets(context.Background(), "app/config"); err != nil {
 		t.Fatalf("GetSecrets() error = %v", err)
@@ -87,15 +96,9 @@ func TestGetSecretsUsesConfiguredMountPoint(t *testing.T) {
 func TestGetSecretsCoercesNonStringValues(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		kvEnvelope(t, w, `{"port":8080,"debug":true,"limits":{"max":10},"hosts":["a","b"]}`)
-	}))
-	defer srv.Close()
-
-	client, err := vault.New(vault.Config{Address: srv.URL, Token: "s.token"})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+		writeSecret(t, w, `{"port":8080,"debug":true,"limits":{"max":10},"hosts":["a","b"]}`)
+	})
 
 	got, err := client.GetSecrets(context.Background(), "app/config")
 	if err != nil {
@@ -115,25 +118,36 @@ func TestGetSecretsCoercesNonStringValues(t *testing.T) {
 	}
 }
 
-func TestGetSecretsMissingSecretPath(t *testing.T) {
+func TestGetSecretsNotFound(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		if _, err := w.Write([]byte(`{"errors":[]}`)); err != nil {
-			t.Errorf("writing response: %v", err)
-		}
-	}))
-	defer srv.Close()
-
-	client, err := vault.New(vault.Config{Address: srv.URL, Token: "s.token"})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "secret path does not exist",
+			body: `{"errors":[]}`,
+		},
+		{
+			name: "secret was deleted",
+			body: `{"data":{"data":null,"metadata":{"deletion_time":"2026-01-01T00:00:00Z","version":1}}}`,
+		},
 	}
 
-	if _, err := client.GetSecrets(context.Background(), "app/missing"); !errors.Is(err, vault.ErrNotFound) {
-		t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrNotFound)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusNotFound, tt.body)
+			})
+
+			_, err := client.GetSecrets(context.Background(), "app/missing")
+			if !errors.Is(err, vault.ErrNotFound) {
+				t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrNotFound)
+			}
+		})
 	}
 }
 
@@ -152,20 +166,11 @@ func TestGetSecretsUnexpectedResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if _, err := w.Write([]byte(tt.body)); err != nil {
-					t.Errorf("writing response: %v", err)
-				}
-			}))
-			defer srv.Close()
+			client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, tt.body)
+			})
 
-			client, err := vault.New(vault.Config{Address: srv.URL, Token: "s.token"})
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-
-			_, err = client.GetSecrets(context.Background(), "app/config")
+			_, err := client.GetSecrets(context.Background(), "app/config")
 			if !errors.Is(err, vault.ErrUnexpectedResponse) {
 				t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrUnexpectedResponse)
 			}
