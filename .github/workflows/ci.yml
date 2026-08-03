@@ -2,10 +2,15 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -30,7 +35,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The runner has Docker, but the default suite must not need it.
+      # Pointing DOCKER_HOST at nothing makes any reach for a container
+      # fail here rather than in a consumer's checkout.
       - name: Test
+        env:
+          DOCKER_HOST: unix:///nonexistent/docker.sock
         run: go test -race -count=1 ./...
 
   integration:
@@ -43,7 +53,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Passes while no integration-tagged tests exist, so this job does
-      # not block the tickets before the container-backed suite lands.
+      # Build tags are additive, so this runs the default suite too. It
+      # passes while no integration-tagged tests exist, which keeps the
+      # job from blocking the tickets before the container-backed suite
+      # lands.
       - name: Test
-        run: go test -tags integration -count=1 ./...
+        run: go test -tags integration -race -count=1 ./...
