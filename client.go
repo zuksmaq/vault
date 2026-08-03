@@ -26,11 +26,13 @@ type Client struct {
 	// was supplied — there is then nothing to log in with.
 	auth api.AuthMethod
 
-	// loginMu serialises re-authentication. The token itself lives in
-	// api.Client, which guards it with a read-write mutex of its own; this
-	// only ensures that readers meeting one expired token log in once
-	// between them rather than once each.
-	loginMu sync.Mutex
+	// tokenMu guards the token's lifecycle. Reads hold it for reading, so
+	// they still run concurrently but no login can replace the token
+	// mid-attempt; re-authentication holds it for writing. That is what
+	// lets a refusal tell an expired token apart from one another reader
+	// has already replaced, and so lets readers meeting one expired token
+	// log in once between them rather than once each.
+	tokenMu sync.RWMutex
 }
 
 // New returns a client reading from the Vault the config describes. When
@@ -137,22 +139,17 @@ func (c *Client) GetSecrets(ctx context.Context, path string) (map[string]string
 // read returns the raw secret values stored at path. Failures are
 // returned rather than logged, so that a caller reports them once.
 func (c *Client) read(ctx context.Context, path string) (map[string]any, error) {
-	// The token in use is captured before the attempt, so that a refusal
-	// can tell "my token expired" from "another reader has already
-	// replaced it".
-	used := c.api.Token()
-
-	secret, err := c.api.Logical().ReadWithContext(ctx, c.dataPath(path))
+	secret, usedToken, err := c.attempt(ctx, path)
 	if isRefused(err) {
 		// A static token cannot be renewed, so the refusal stands.
 		if c.auth == nil {
 			return nil, fmt.Errorf("%w: reading %q: %w", ErrPermissionDenied, path, err)
 		}
-		if loginErr := c.reauthenticate(ctx, used); loginErr != nil {
+		if loginErr := c.reauthenticate(ctx, usedToken); loginErr != nil {
 			return nil, loginErr
 		}
 
-		secret, err = c.api.Logical().ReadWithContext(ctx, c.dataPath(path))
+		secret, _, err = c.attempt(ctx, path)
 		if isRefused(err) {
 			// A fresh token was refused too, so the policy — not expiry —
 			// is what denies this read. One retry, never a loop.
@@ -188,15 +185,29 @@ func (c *Client) read(ctx context.Context, path string) (map[string]any, error) 
 	return data, nil
 }
 
+// attempt reads path once, reporting the token the request carried. The
+// token is held for reading across the whole request, so the token
+// reported is provably the one Vault judged — without that, a login
+// landing between capturing it and sending the request would make a
+// refusal indistinguishable from one already recovered from.
+func (c *Client) attempt(ctx context.Context, path string) (*api.Secret, string, error) {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+
+	usedToken := c.api.Token()
+	secret, err := c.api.Logical().ReadWithContext(ctx, c.dataPath(path))
+	return secret, usedToken, err
+}
+
 // reauthenticate logs in again, unless another reader has already replaced
-// the token that used identifies. Concurrent readers meeting one expired
+// the token usedToken identifies. Concurrent readers meeting one expired
 // token therefore produce one login between them, not one each, per
 // ADR-0002.
-func (c *Client) reauthenticate(ctx context.Context, used string) error {
-	c.loginMu.Lock()
-	defer c.loginMu.Unlock()
+func (c *Client) reauthenticate(ctx context.Context, usedToken string) error {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
 
-	if c.api.Token() != used {
+	if c.api.Token() != usedToken {
 		return nil
 	}
 	return c.login(ctx)

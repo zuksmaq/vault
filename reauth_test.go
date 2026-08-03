@@ -132,6 +132,61 @@ func TestGetSecretsPermissionDeniedWithAStaticToken(t *testing.T) {
 	}
 }
 
+func TestGetSecretsClassifiesAFailedRetryOnItsOwnTerms(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int64
+	address, _ := newVault(t, tokenIssuer(t), func(w http.ResponseWriter, _ *http.Request) {
+		if reads.Add(1) == 1 {
+			refuse(t, w)
+			return
+		}
+		// Vault goes away between the refusal and the retry.
+		writeJSON(t, w, http.StatusServiceUnavailable, `{"errors":["vault is sealed"]}`)
+	})
+
+	client, err := vault.New(vault.Config{Address: address, AppRole: appRole})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.GetSecrets(context.Background(), "app/config")
+	if !errors.Is(err, vault.ErrUnavailable) {
+		t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrUnavailable)
+	}
+	if errors.Is(err, vault.ErrPermissionDenied) {
+		t.Errorf("GetSecrets() error = %v, want a retry that fails otherwise not to read as a refusal", err)
+	}
+}
+
+func TestGetSecretsReportsAFailedReauthentication(t *testing.T) {
+	t.Parallel()
+
+	// The secret ID has been revoked since construction, so the token
+	// cannot be replaced when it expires.
+	var logins atomic.Int64
+	address, _ := newVault(t,
+		func(w http.ResponseWriter, _ *http.Request) {
+			if logins.Add(1) == 1 {
+				writeToken(t, w, "s.v1")
+				return
+			}
+			writeJSON(t, w, http.StatusBadRequest, `{"errors":["invalid role or secret id"]}`)
+		},
+		func(w http.ResponseWriter, _ *http.Request) { refuse(t, w) },
+	)
+
+	client, err := vault.New(vault.Config{Address: address, AppRole: appRole})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.GetSecrets(context.Background(), "app/config")
+	if !errors.Is(err, vault.ErrAuthFailed) {
+		t.Fatalf("GetSecrets() error = %v, want %v", err, vault.ErrAuthFailed)
+	}
+}
+
 func TestGetSecretsConcurrentReadersProduceOneLogin(t *testing.T) {
 	t.Parallel()
 
