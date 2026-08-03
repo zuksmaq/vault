@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/hashicorp/vault/api"
+	"github.com/hashicorp/vault/api/auth/approle"
 )
 
 // Client reads secrets from one Vault instance. It is safe for concurrent
@@ -19,11 +20,28 @@ type Client struct {
 	api        *api.Client
 	mountPoint string
 	logger     *slog.Logger
+
+	// auth is how the client earns a token, and is nil when a static token
+	// was supplied — there is then nothing to log in with.
+	auth api.AuthMethod
 }
 
-// New returns a client reading from the Vault the config describes.
+// New returns a client reading from the Vault the config describes. When
+// the credential is an AppRole it logs in before returning, so rejected
+// credentials surface here rather than on the first read.
 func New(cfg Config, opts ...Option) (*Client, error) {
-	if err := cfg.Validate(); err != nil {
+	client := &Client{
+		mountPoint: cfg.mountPoint(),
+		// A library writes nothing until its caller asks it to, and
+		// never borrows the package-level default logger.
+		logger: slog.New(slog.DiscardHandler),
+	}
+	// Options are applied before the config is validated, because an
+	// option may itself be the credential the config is missing.
+	for _, opt := range opts {
+		opt(client)
+	}
+	if err := cfg.validate(client.auth != nil); err != nil {
 		return nil, err
 	}
 
@@ -34,19 +52,47 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building vault client: %w", err)
 	}
-	apiClient.SetToken(cfg.Token)
+	client.api = apiClient
 
-	client := &Client{
-		api:        apiClient,
-		mountPoint: cfg.mountPoint(),
-		// A library writes nothing until its caller asks it to, and
-		// never borrows the package-level default logger.
-		logger: slog.New(slog.DiscardHandler),
+	if cfg.Token != "" {
+		apiClient.SetToken(cfg.Token)
+		return client, nil
 	}
-	for _, opt := range opts {
-		opt(client)
+
+	if client.auth == nil {
+		auth, err := approle.NewAppRoleAuth(cfg.AppRole.RoleID,
+			&approle.SecretID{FromString: cfg.AppRole.SecretID})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		}
+		client.auth = auth
+	}
+
+	// New takes no context, so construction cannot be cancelled. Reads
+	// can be, and a re-authentication carries the read's context.
+	if err := client.login(context.Background()); err != nil {
+		return nil, err
 	}
 	return client, nil
+}
+
+// login exchanges the client's credential for a fresh token, which
+// vault/api stores for subsequent requests.
+func (c *Client) login(ctx context.Context) error {
+	if _, err := c.api.Auth().Login(ctx, c.auth); err != nil {
+		// A sealed or overloaded Vault refuses a login too, and that is
+		// not the same as a credential it rejected.
+		var respErr *api.ResponseError
+		if errors.As(err, &respErr) && isVaultSideFailure(respErr.StatusCode) {
+			return fmt.Errorf("%w: logging in: %w", ErrUnavailable, err)
+		}
+		return fmt.Errorf("%w: %w", ErrAuthFailed, err)
+	}
+
+	// The role ID identifies the credential, so the outcome is logged
+	// without it.
+	c.logger.DebugContext(ctx, "logged in")
+	return nil
 }
 
 // GetSecrets returns every secret value at path, coerced to a string. The

@@ -2,7 +2,10 @@ module github.com/zuksmaq/vault
 
 go 1.26
 
-require github.com/hashicorp/vault/api v1.23.0
+require (
+	github.com/hashicorp/vault/api v1.23.0
+	github.com/hashicorp/vault/api/auth/approle v0.12.0
+)
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
