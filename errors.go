@@ -11,6 +11,13 @@ var (
 	// issued and no read can be attempted.
 	ErrAuthFailed = errors.New("authentication failed")
 
+	// ErrPermissionDenied reports a read Vault refused with a credential
+	// it accepted. An expired token is recovered from before this
+	// surfaces, so it means the role's policy does not allow the read —
+	// or, with a static token, that the token is no longer valid and
+	// there is nothing to log in with.
+	ErrPermissionDenied = errors.New("permission denied")
+
 	// ErrNotFound reports that a secret path does not exist.
 	ErrNotFound = errors.New("not found")
 
