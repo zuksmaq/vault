@@ -5,7 +5,10 @@ package vault
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 
 	"github.com/hashicorp/vault/api"
 )
@@ -15,10 +18,11 @@ import (
 type Client struct {
 	api        *api.Client
 	mountPoint string
+	logger     *slog.Logger
 }
 
 // New returns a client reading from the Vault the config describes.
-func New(cfg Config) (*Client, error) {
+func New(cfg Config, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -32,7 +36,17 @@ func New(cfg Config) (*Client, error) {
 	}
 	apiClient.SetToken(cfg.Token)
 
-	return &Client{api: apiClient, mountPoint: cfg.mountPoint()}, nil
+	client := &Client{
+		api:        apiClient,
+		mountPoint: cfg.mountPoint(),
+		// A library writes nothing until its caller asks it to, and
+		// never borrows the package-level default logger.
+		logger: slog.New(slog.DiscardHandler),
+	}
+	for _, opt := range opts {
+		opt(client)
+	}
+	return client, nil
 }
 
 // GetSecrets returns every secret value at path, coerced to a string. The
@@ -47,13 +61,25 @@ func (c *Client) GetSecrets(ctx context.Context, path string) (map[string]string
 	for key, value := range data {
 		secrets[key] = coerce(value)
 	}
+
+	// The count is safe to log; the keys it counts are not.
+	c.logger.DebugContext(ctx, "read secret", "path", path, "values", len(secrets))
 	return secrets, nil
 }
 
-// read returns the raw secret values stored at path.
+// read returns the raw secret values stored at path. Failures are
+// returned rather than logged, so that a caller reports them once.
 func (c *Client) read(ctx context.Context, path string) (map[string]any, error) {
+	c.logger.DebugContext(ctx, "reading secret", "path", path, "mount", c.mountPoint)
+
 	secret, err := c.api.Logical().ReadWithContext(ctx, c.dataPath(path))
 	if err != nil {
+		// A failure Vault owns is worth retrying; a transport failure is
+		// wrapped intact so a timeout still looks like a timeout.
+		var respErr *api.ResponseError
+		if errors.As(err, &respErr) && respErr.StatusCode >= http.StatusInternalServerError {
+			return nil, fmt.Errorf("%w: reading %q: %w", ErrUnavailable, path, err)
+		}
 		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
 	if secret == nil {

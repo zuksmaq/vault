@@ -12,7 +12,7 @@ import (
 
 // newClient starts a Vault answering with handler and returns a client
 // pointed at it.
-func newClient(t *testing.T, cfg vault.Config, handler http.HandlerFunc) *vault.Client {
+func newClient(t *testing.T, cfg vault.Config, handler http.HandlerFunc, opts ...vault.Option) *vault.Client {
 	t.Helper()
 
 	srv := httptest.NewServer(handler)
@@ -21,7 +21,7 @@ func newClient(t *testing.T, cfg vault.Config, handler http.HandlerFunc) *vault.
 	cfg.Address = srv.URL
 	cfg.Token = "s.token"
 
-	client, err := vault.New(cfg)
+	client, err := vault.New(cfg, opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

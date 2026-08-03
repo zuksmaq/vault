@@ -13,4 +13,8 @@ var (
 	// ErrUnexpectedResponse reports a response Vault returned in a shape
 	// this client does not understand.
 	ErrUnexpectedResponse = errors.New("unexpected response")
+
+	// ErrUnavailable reports that Vault failed on its own side, after
+	// vault/api exhausted its retries. Retrying may be worthwhile.
+	ErrUnavailable = errors.New("vault unavailable")
 )
