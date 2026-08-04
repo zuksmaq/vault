@@ -53,9 +53,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Build tags are additive, so this runs the default suite too. It
-      # passes while no integration-tagged tests exist, which keeps the
-      # job from blocking the tickets before the container-backed suite
-      # lands.
+      # Build tags are additive, so this runs the default suite too, plus
+      # the tagged suite that stands up a real Vault via testcontainers.
+      # It has a container image to pull, so it gets longer than the
+      # default ten minutes.
       - name: Test
-        run: go test -tags integration -race -count=1 ./...
+        run: go test -tags integration -race -count=1 -timeout 15m ./...

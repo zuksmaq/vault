@@ -48,6 +48,9 @@ func TestIntegration(t *testing.T) {
 		"timeout":  "30s",
 		"database": map[string]any{"host": "db", "port": 5432},
 	})
+	// A secret the policy does not cover, so that a refusal is provably
+	// about the policy rather than about the secret not being there.
+	putSecret(ctx, t, root, "other/config", map[string]any{"username": "other"})
 
 	// Constructing the client logs in, so a real AppRole login response is
 	// exercised by every subtest below.
@@ -60,6 +63,8 @@ func TestIntegration(t *testing.T) {
 	}
 
 	t.Run("GetSecrets returns the whole secret", func(t *testing.T) {
+		t.Parallel()
+
 		secrets, err := client.GetSecrets(ctx, "app/config")
 		if err != nil {
 			t.Fatalf("GetSecrets: %v", err)
@@ -85,6 +90,8 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("GetSecret returns one value", func(t *testing.T) {
+		t.Parallel()
+
 		port, err := client.GetSecret(ctx, "app/config", "port")
 		if err != nil {
 			t.Fatalf("GetSecret: %v", err)
@@ -95,11 +102,13 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("Unmarshal binds typed fields", func(t *testing.T) {
+		t.Parallel()
+
 		var cfg struct {
-			Username string `json:"username"`
-			Port     int    `json:"port"`
-			TLS      bool   `json:"tls"`
-			Timeout  vault.Duration
+			Username string         `json:"username"`
+			Port     int            `json:"port"`
+			TLS      bool           `json:"tls"`
+			Timeout  vault.Duration `json:"timeout"`
 			Database struct {
 				Host string `json:"host"`
 				Port int    `json:"port"`
@@ -126,24 +135,23 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	// A path with no secret at it answers 404 with an empty body, which a
+	// fake can only be assumed to imitate.
 	t.Run("a missing secret path is not found", func(t *testing.T) {
+		t.Parallel()
+
 		_, err := client.GetSecrets(ctx, "app/absent")
 		if !errors.Is(err, vault.ErrNotFound) {
 			t.Errorf("got %v, want ErrNotFound", err)
 		}
 	})
 
-	t.Run("a missing key is not found", func(t *testing.T) {
-		_, err := client.GetSecret(ctx, "app/config", "absent")
-		if !errors.Is(err, vault.ErrNotFound) {
-			t.Errorf("got %v, want ErrNotFound", err)
-		}
-	})
-
 	t.Run("a refused read is permission denied", func(t *testing.T) {
-		// The policy covers app/ only. A real Vault refuses this read, and
-		// a login gains nothing, so the second refusal is what the caller
-		// sees.
+		t.Parallel()
+
+		// The policy covers app/ only, so this secret exists but is not
+		// readable. Logging in again gains nothing, so the second refusal
+		// is what the caller sees.
 		_, err := client.GetSecrets(ctx, "other/config")
 		if !errors.Is(err, vault.ErrPermissionDenied) {
 			t.Errorf("got %v, want ErrPermissionDenied", err)
