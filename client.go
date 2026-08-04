@@ -67,6 +67,29 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	apiCfg := api.DefaultConfig()
 	apiCfg.Address = cfg.Address
 
+	// DefaultConfig has already read VAULT_CACERT and VAULT_SKIP_VERIFY from
+	// the environment. ConfigureTLS can only loosen what it found — it sets
+	// InsecureSkipVerify when asked and never clears it — so a config saying
+	// nothing about TLS keeps the secure default, but InsecureSkipVerify:
+	// false cannot restore verification the environment switched off.
+	// Teaching explicit configuration to beat the environment is ticket 09.
+	if err := apiCfg.ConfigureTLS(&api.TLSConfig{
+		CACert:      cfg.CACertPath,
+		CACertBytes: cfg.CACertPEM,
+		Insecure:    cfg.InsecureSkipVerify,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: configuring tls: %w", ErrInvalidConfig, err)
+	}
+	// The warning follows the connection's actual state rather than this
+	// config, so the environment's route out of verification is as loud as
+	// the field's. Nothing suppresses it: the predecessor silenced the
+	// equivalent warning, which is how services ended up unverified by
+	// accident.
+	if apiCfg.TLSConfig().InsecureSkipVerify {
+		client.logger.WarnContext(context.Background(),
+			"tls certificate verification disabled", "address", cfg.Address)
+	}
+
 	apiClient, err := api.NewClient(apiCfg)
 	if err != nil {
 		return nil, fmt.Errorf("building vault client: %w", err)

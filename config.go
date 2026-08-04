@@ -24,6 +24,21 @@ type Config struct {
 	// AppRole is the credential an unattended service authenticates with.
 	// It is mutually exclusive with Token.
 	AppRole AppRole
+
+	// CACertPath is the path to a PEM file holding the CA that signed the
+	// Vault's certificate. It takes precedence over CACertPEM.
+	CACertPath string
+
+	// CACertPEM is that same CA as raw PEM bytes, so a pod can pass the
+	// service CA already mounted into it with no file to manage.
+	CACertPEM []byte
+
+	// InsecureSkipVerify stops the client verifying the Vault's
+	// certificate, which leaves the connection open to interception. It is
+	// named as crypto/tls names it so that it reads as alarming in review,
+	// and supplying the CA above is the better answer. Turning it on logs a
+	// warning through the supplied logger.
+	InsecureSkipVerify bool
 }
 
 // AppRole is the role ID and secret ID pair issued when a vault is
