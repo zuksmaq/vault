@@ -18,7 +18,9 @@ var (
 	// there is nothing to log in with.
 	ErrPermissionDenied = errors.New("permission denied")
 
-	// ErrNotFound reports that a secret path does not exist.
+	// ErrNotFound reports that a secret path does not exist, or that a
+	// secret path exists but holds no value under the requested key. The
+	// message says which.
 	ErrNotFound = errors.New("not found")
 
 	// ErrUnexpectedResponse reports a response Vault returned in a shape
