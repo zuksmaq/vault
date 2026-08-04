@@ -1,9 +1,11 @@
 # Recover from token expiry by re-authenticating lazily
 
 An AppRole login returns a token with a TTL, commonly an hour. The
-Python and Go clients that preceded this one logged in once and never
-renewed, so a long-running service failed an hour in with an error that
-read like a network fault. We re-authenticate lazily instead: a read
+Python client that preceded this one logged in once and never renewed,
+so a long-running service failed an hour in with an error that read like
+a network fault. The earlier Go client could not log in at all: it
+accepted only a token obtained by hand, which expired the same way with
+nothing to replace it. We re-authenticate lazily instead: a read
 refused with 403 triggers one login and one retry, and a second refusal
 surfaces as `ErrPermissionDenied`.
 
