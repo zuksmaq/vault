@@ -115,10 +115,10 @@ func TestNewDoesNotBlameCredentialsForATransportFailure(t *testing.T) {
 	t.Parallel()
 
 	// A Vault that never answers rejected nothing, so reporting the
-	// credential as refused would make a network fault unactionable.
-	srv := httptest.NewServer(nil)
-	address := srv.URL
-	srv.Close()
+	// credential as refused would make a network fault unactionable. Port
+	// 1 is used rather than a closed server's address, which another
+	// test's server could bind in the meantime.
+	const address = "http://127.0.0.1:1"
 
 	_, err := vault.New(vault.Config{
 		Address: address,
