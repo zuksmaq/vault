@@ -17,6 +17,23 @@ import (
 	"github.com/zuksmaq/vault"
 )
 
+// pinVaultEnvironment clears every variable vault/api reads for itself, so a
+// test judges the config it was given rather than whatever the developer's
+// shell happens to say, and then sets back only the one it is about. It uses
+// t.Setenv, so a test that calls it cannot also call t.Parallel — these tests
+// are a handshake each, so that is cheaper than letting the environment
+// decide the result.
+func pinVaultEnvironment(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{
+		"VAULT_ADDR", "VAULT_AGENT_ADDR", "VAULT_TOKEN",
+		"VAULT_CACERT", "VAULT_CACERT_BYTES", "VAULT_CAPATH", "VAULT_SKIP_VERIFY",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
 // tlsServer starts a Vault answering over TLS with one secret, and returns
 // its address and its own certificate as PEM. The certificate is signed by
 // nobody a system root store knows, which is what makes it a fair stand-in
@@ -53,7 +70,7 @@ func readOverTLS(t *testing.T, cfg vault.Config, opts ...vault.Option) error {
 }
 
 func TestTLSVerifiesWithSuppliedCA(t *testing.T) {
-	t.Parallel()
+	pinVaultEnvironment(t)
 
 	address, caPEM := tlsServer(t)
 
@@ -78,8 +95,6 @@ func TestTLSVerifiesWithSuppliedCA(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			if err := readOverTLS(t, tt.cfg); err != nil {
 				t.Fatalf("GetSecrets() over verified TLS error = %v", err)
 			}
@@ -91,7 +106,7 @@ func TestTLSVerifiesWithSuppliedCA(t *testing.T) {
 // connection that succeeds with a CA must fail without one, or the test
 // above would pass on a client that verifies nothing.
 func TestTLSVerifiesByDefault(t *testing.T) {
-	t.Parallel()
+	pinVaultEnvironment(t)
 
 	address, _ := tlsServer(t)
 
@@ -107,14 +122,15 @@ func TestTLSVerifiesByDefault(t *testing.T) {
 }
 
 func TestTLSInsecureSkipVerify(t *testing.T) {
-	t.Parallel()
+	pinVaultEnvironment(t)
 
 	address, _ := tlsServer(t)
 
 	var logged bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-	cfg := vault.Config{Address: address, InsecureSkipVerify: true}
+	skip := true
+	cfg := vault.Config{Address: address, InsecureSkipVerify: &skip}
 	if err := readOverTLS(t, cfg, vault.WithLogger(logger)); err != nil {
 		t.Fatalf("GetSecrets() with verification disabled error = %v", err)
 	}
@@ -135,6 +151,7 @@ func TestTLSInsecureSkipVerify(t *testing.T) {
 // precedence between this and an explicit field is ticket 09; being loud
 // about it is this ticket.
 func TestTLSWarnsWhenTheEnvironmentDisablesVerification(t *testing.T) {
+	pinVaultEnvironment(t)
 	t.Setenv("VAULT_SKIP_VERIFY", "true")
 
 	address, _ := tlsServer(t)
@@ -154,7 +171,7 @@ func TestTLSWarnsWhenTheEnvironmentDisablesVerification(t *testing.T) {
 // TestTLSWarnsOnlyWhenVerificationIsDisabled pins that the warning is not
 // noise a caller learns to ignore.
 func TestTLSWarnsOnlyWhenVerificationIsDisabled(t *testing.T) {
-	t.Parallel()
+	pinVaultEnvironment(t)
 
 	address, caPEM := tlsServer(t)
 
@@ -172,7 +189,7 @@ func TestTLSWarnsOnlyWhenVerificationIsDisabled(t *testing.T) {
 }
 
 func TestTLSRejectsUnusableCA(t *testing.T) {
-	t.Parallel()
+	pinVaultEnvironment(t)
 
 	tests := []struct {
 		name string
@@ -190,8 +207,6 @@ func TestTLSRejectsUnusableCA(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			tt.cfg.Address = "https://vault.example.test"
 			tt.cfg.Token = "s.token"
 

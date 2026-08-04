@@ -10,7 +10,8 @@ const defaultMountPoint = "secret"
 // read with.
 type Config struct {
 	// Address is the base URL of the Vault instance, for example
-	// https://vault.example.com.
+	// https://vault.example.com. It falls back to VAULT_ADDR when empty,
+	// which is how one build runs against several environments.
 	Address string
 
 	// MountPoint is the path the KV v2 secrets engine is mounted at. It
@@ -26,7 +27,8 @@ type Config struct {
 	AppRole AppRole
 
 	// CACertPath is the path to a PEM file holding the CA that signed the
-	// Vault's certificate. It takes precedence over CACertPEM.
+	// Vault's certificate. It takes precedence over CACertPEM, and both
+	// take precedence over VAULT_CACERT.
 	CACertPath string
 
 	// CACertPEM is that same CA as raw PEM bytes, so a pod can pass the
@@ -38,7 +40,13 @@ type Config struct {
 	// named as crypto/tls names it so that it reads as alarming in review,
 	// and supplying the CA above is the better answer. Turning it on logs a
 	// warning through the supplied logger.
-	InsecureSkipVerify bool
+	//
+	// It is a pointer so that all three answers can be told apart: nil
+	// leaves the decision to VAULT_SKIP_VERIFY, and verifies when that is
+	// unset too, while a value set either way beats that variable — a
+	// service that has decided it needs verification keeps it whatever the
+	// deployment manifests say.
+	InsecureSkipVerify *bool
 }
 
 // AppRole is the role ID and secret ID pair issued when a vault is
@@ -61,8 +69,9 @@ func (r AppRole) supplied() bool {
 
 // Validate reports whether the config carries the mandatory fields and a
 // coherent credential. It judges the config alone: a client built with
-// WithAuthMethod carries its credential outside the config, so New is the
-// authority on whether a credential was supplied at all.
+// WithAuthMethod carries its credential outside the config, and an address
+// may arrive from VAULT_ADDR, so New — which fills both in first — is the
+// authority on whether either was supplied at all.
 func (c Config) Validate() error {
 	if c.Address == "" {
 		return fmt.Errorf("%w: address is required", ErrInvalidConfig)
