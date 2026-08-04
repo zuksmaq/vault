@@ -7,6 +7,10 @@ var (
 	// usable client.
 	ErrInvalidConfig = errors.New("invalid config")
 
+	// ErrAuthFailed reports a credential Vault rejected, so no token was
+	// issued and no read can be attempted.
+	ErrAuthFailed = errors.New("authentication failed")
+
 	// ErrNotFound reports that a secret path does not exist.
 	ErrNotFound = errors.New("not found")
 

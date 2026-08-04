@@ -26,6 +26,28 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			name: "no credential",
 			cfg:  vault.Config{Address: "https://vault.example.com"},
 		},
+		{
+			name: "both a token and an approle",
+			cfg: vault.Config{
+				Address: "https://vault.example.com",
+				Token:   "s.token",
+				AppRole: vault.AppRole{RoleID: "role-id", SecretID: "secret-id"},
+			},
+		},
+		{
+			name: "approle without a secret id",
+			cfg: vault.Config{
+				Address: "https://vault.example.com",
+				AppRole: vault.AppRole{RoleID: "role-id"},
+			},
+		},
+		{
+			name: "approle without a role id",
+			cfg: vault.Config{
+				Address: "https://vault.example.com",
+				AppRole: vault.AppRole{SecretID: "secret-id"},
+			},
+		},
 	}
 
 	for _, tt := range tests {

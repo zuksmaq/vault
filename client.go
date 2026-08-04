@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/hashicorp/vault/api"
+	"github.com/hashicorp/vault/api/auth/approle"
 )
 
 // Client reads secrets from one Vault instance. It is safe for concurrent
@@ -19,12 +20,37 @@ type Client struct {
 	api        *api.Client
 	mountPoint string
 	logger     *slog.Logger
+
+	// auth is how the client earns a token, and is nil when a static token
+	// was supplied — there is then nothing to log in with.
+	auth api.AuthMethod
 }
 
-// New returns a client reading from the Vault the config describes.
+// New returns a client reading from the Vault the config describes. When
+// the credential is an AppRole it logs in before returning, so rejected
+// credentials surface here rather than on the first read.
 func New(cfg Config, opts ...Option) (*Client, error) {
+	client := &Client{
+		mountPoint: cfg.mountPoint(),
+		// A library writes nothing until its caller asks it to, and
+		// never borrows the package-level default logger.
+		logger: slog.New(slog.DiscardHandler),
+	}
+	// Options are applied before the config is validated, because an
+	// option may itself be the credential the config is missing.
+	for _, opt := range opts {
+		opt(client)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	// The config cannot see an auth method supplied by an option, so
+	// whether exactly one credential was supplied is settled here.
+	switch hasConfigCredential := cfg.Token != "" || cfg.AppRole.supplied(); {
+	case hasConfigCredential && client.auth != nil:
+		return nil, fmt.Errorf("%w: an auth method and a config credential were both supplied, want one", ErrInvalidConfig)
+	case !hasConfigCredential && client.auth == nil:
+		return nil, fmt.Errorf("%w: a static token or an approle is required", ErrInvalidConfig)
 	}
 
 	apiCfg := api.DefaultConfig()
@@ -34,19 +60,52 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building vault client: %w", err)
 	}
-	apiClient.SetToken(cfg.Token)
+	client.api = apiClient
 
-	client := &Client{
-		api:        apiClient,
-		mountPoint: cfg.mountPoint(),
-		// A library writes nothing until its caller asks it to, and
-		// never borrows the package-level default logger.
-		logger: slog.New(slog.DiscardHandler),
+	if cfg.Token != "" {
+		apiClient.SetToken(cfg.Token)
+		return client, nil
 	}
-	for _, opt := range opts {
-		opt(client)
+
+	if client.auth == nil {
+		auth, err := approle.NewAppRoleAuth(cfg.AppRole.RoleID,
+			&approle.SecretID{FromString: cfg.AppRole.SecretID})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		}
+		client.auth = auth
+	}
+
+	// New takes no context, so construction cannot be cancelled.
+	if err := client.login(context.Background()); err != nil {
+		return nil, err
 	}
 	return client, nil
+}
+
+// login exchanges the client's credential for a fresh token, which
+// vault/api stores for subsequent requests.
+func (c *Client) login(ctx context.Context) error {
+	if _, err := c.api.Auth().Login(ctx, c.auth); err != nil {
+		var respErr *api.ResponseError
+		switch {
+		case isUnavailable(err):
+			// A sealed or overloaded Vault refuses a login too, which is
+			// not the same as a credential it rejected.
+			return fmt.Errorf("%w: logging in: %w", ErrUnavailable, err)
+		case errors.As(err, &respErr):
+			return fmt.Errorf("%w: logging in: %w", ErrAuthFailed, err)
+		default:
+			// Vault never answered, so it never rejected anything. The
+			// failure is wrapped intact so a timeout still looks like one.
+			return fmt.Errorf("logging in: %w", err)
+		}
+	}
+
+	// The role ID identifies the credential, so the outcome is logged
+	// without it.
+	c.logger.DebugContext(ctx, "logged in")
+	return nil
 }
 
 // GetSecrets returns every secret value at path, coerced to a string. The
@@ -75,8 +134,7 @@ func (c *Client) read(ctx context.Context, path string) (map[string]any, error) 
 	if err != nil {
 		// A failure Vault owns is worth retrying; a transport failure is
 		// wrapped intact so a timeout still looks like a timeout.
-		var respErr *api.ResponseError
-		if errors.As(err, &respErr) && isVaultSideFailure(respErr.StatusCode) {
+		if isUnavailable(err) {
 			return nil, fmt.Errorf("%w: reading %q: %w", ErrUnavailable, path, err)
 		}
 		return nil, fmt.Errorf("reading %q: %w", path, err)
@@ -100,6 +158,13 @@ func (c *Client) read(ctx context.Context, path string) (map[string]any, error) 
 		return nil, fmt.Errorf("%w: %q is not a kv v2 secret", ErrUnexpectedResponse, path)
 	}
 	return data, nil
+}
+
+// isUnavailable reports whether err is a failure Vault answered with and
+// may recover from, as opposed to a transport failure or a refusal.
+func isUnavailable(err error) bool {
+	var respErr *api.ResponseError
+	return errors.As(err, &respErr) && isVaultSideFailure(respErr.StatusCode)
 }
 
 // isVaultSideFailure reports whether status describes a failure Vault
