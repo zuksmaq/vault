@@ -51,9 +51,9 @@ func TestGetSecretsServerFailureIsUnavailable(t *testing.T) {
 
 // TestGetSecretsTransportFailureKeepsUnderlyingError pins that a
 // transport failure is wrapped rather than flattened into a sentinel, so
-// a cancellation still looks like a cancellation to the caller. This is
-// the deliberate departure from the Python package, whose catch-all
-// connection error made every failure look like a network problem.
+// a cancellation still looks like a cancellation to the caller. A
+// catch-all connection error would make every failure look like a
+// network problem, which is what this deliberately avoids.
 func TestGetSecretsTransportFailureKeepsUnderlyingError(t *testing.T) {
 	t.Parallel()
 

@@ -190,29 +190,7 @@ discovery: if your Vault mounts KV v2 elsewhere, set the field. The
 symptom of leaving it unset is `ErrNotFound` for a secret that plainly
 exists in the UI.
 
-## Migrating from the Python package
-
-Two things change, and the first will not compile.
-
-1. **Secrets no longer arrive through the environment.** The Python
-   package pushed secret values into environment variables and let code
-   read them with `os.environ` afterwards. This client accepts a struct
-   or a map and keeps secrets in process memory.
-
-   Read them into your own configuration struct with `Unmarshal`, or as
-   a `map[string]string` with `GetSecrets`, and pass that value where it
-   is needed. Secrets stay out of the environment on purpose: child
-   processes and crash reporters cannot reach process memory.
-
-2. **A connection failure and an expired token are no longer the same
-   error.** The Python package's catch-all connection error made an
-   expired token look like a network problem. Branch on the sentinels
-   above instead.
-
-The TLS note in the next section applies to you too, and it is the one
-that fails on the very first connection.
-
-## Migrating from either predecessor
+## Migrating from a predecessor
 
 **TLS is verified by default, so your first connection may fail.** Both
 predecessors skipped verification, so a service that relied on that will
