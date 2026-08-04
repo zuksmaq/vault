@@ -18,10 +18,9 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			name: "empty config",
 			cfg:  vault.Config{},
 		},
-		{
-			name: "no address",
-			cfg:  vault.Config{Token: "s.token"},
-		},
+		// A config with no address is only invalid when the environment
+		// supplies none either, so that case cannot be judged from a
+		// parallel test. It lives in TestAddressIsRequiredFromSomewhere.
 		{
 			name: "no credential",
 			cfg:  vault.Config{Address: "https://vault.example.com"},

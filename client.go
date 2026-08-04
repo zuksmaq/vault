@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -40,6 +41,11 @@ type Client struct {
 // New returns a client reading from the Vault the config describes. When
 // the credential is an AppRole it logs in before returning, so rejected
 // credentials surface here rather than on the first read.
+//
+// The address, the CA and whether to verify certificates fall back to the
+// environment variables the Vault CLI honours — VAULT_ADDR, VAULT_CACERT
+// and VAULT_SKIP_VERIFY — when the config leaves them out. Anything the
+// config states beats the environment.
 func New(cfg Config, opts ...Option) (*Client, error) {
 	client := &Client{
 		mountPoint: cfg.mountPoint(),
@@ -51,6 +57,14 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	// option may itself be the credential the config is missing.
 	for _, opt := range opts {
 		opt(client)
+	}
+	// The environment supplies what the config leaves out, so validation
+	// judges the address the client will actually dial. vault/api reads the
+	// same variable for itself; reading it here too is what lets a config
+	// with no address at all be valid.
+	addressFromConfig := cfg.Address != ""
+	if !addressFromConfig {
+		cfg.Address = os.Getenv(api.EnvVaultAddress)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -65,7 +79,53 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	}
 
 	apiCfg := api.DefaultConfig()
+	// DefaultConfig reads the environment, and a value it could not parse
+	// is a misconfigured environment rather than a fault of Vault's.
+	if apiCfg.Error != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, apiCfg.Error)
+	}
 	apiCfg.Address = cfg.Address
+	// VAULT_AGENT_ADDR outranks the address inside vault/api, so a config
+	// that named an address has to clear it or the environment would win
+	// after all.
+	if addressFromConfig {
+		apiCfg.AgentAddress = ""
+	}
+
+	// DefaultConfig has already read VAULT_CACERT and VAULT_SKIP_VERIFY from
+	// the environment, which is the fallback layer. A CA supplied here
+	// replaces the pool that read, so explicit configuration wins.
+	if err := apiCfg.ConfigureTLS(&api.TLSConfig{
+		CACert:      cfg.CACertPath,
+		CACertBytes: cfg.CACertPEM,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: configuring tls: %w", ErrInvalidConfig, err)
+	}
+	// Verification is the one setting the environment cannot be allowed to
+	// have the last word on, and ConfigureTLS cannot express it: that only
+	// ever switches verification off, never back on. So a config that has
+	// decided either way is written straight onto the transport, over
+	// whatever VAULT_SKIP_VERIFY put there.
+	if cfg.InsecureSkipVerify != nil {
+		// DefaultConfig always builds an *http.Transport today, so this
+		// never fails. It is checked anyway because the alternative is a
+		// panic, and because a future vault/api that wrapped its transport
+		// would otherwise ignore a decision about verification silently.
+		transport, ok := apiCfg.HttpClient.Transport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("%w: cannot set certificate verification: vault/api supplied a %T", ErrInvalidConfig, apiCfg.HttpClient.Transport)
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = *cfg.InsecureSkipVerify
+	}
+	// The warning follows the connection's actual state rather than this
+	// config, so the environment's route out of verification is as loud as
+	// the field's. Nothing suppresses it: the predecessor silenced the
+	// equivalent warning, which is how services ended up unverified by
+	// accident.
+	if apiCfg.TLSConfig().InsecureSkipVerify {
+		client.logger.WarnContext(context.Background(),
+			"tls certificate verification disabled", "address", cfg.Address)
+	}
 
 	apiClient, err := api.NewClient(apiCfg)
 	if err != nil {
