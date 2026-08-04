@@ -25,7 +25,19 @@ pod can pass the service CA already mounted into it, with no files to
 manage or certificates to bake into images.
 
 Precedence is explicit config, then environment variable, then the
-secure default.
+secure default. `InsecureSkipVerify` is a `*bool` so that all three
+answers are distinguishable: a plain `bool` cannot tell "I require
+verification" from "I said nothing", and `vault/api`'s `ConfigureTLS`
+only ever switches verification off, so a service that hard-codes the
+requirement would otherwise be overridden by `VAULT_SKIP_VERIFY`
+without a word. The cost is that callers need an addressable variable
+rather than a literal; the benefit is that a deployment manifest cannot
+quietly unpick a decision the code made.
+
+Precedence for verification is therefore applied to the transport
+directly rather than through `ConfigureTLS`, which is the only setting
+that needs it. The address and the CA are strings, where empty already
+means "not supplied".
 
 Services ported from either predecessor that quietly relied on the
 insecure default will fail on their first connection until they supply
