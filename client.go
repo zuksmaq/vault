@@ -3,12 +3,14 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/vault/api"
@@ -136,6 +138,27 @@ func (c *Client) GetSecrets(ctx context.Context, path string) (map[string]string
 	return secrets, nil
 }
 
+// GetSecret returns the one secret value stored at path under key, coerced
+// to a string. A key that the secret does not hold is ErrNotFound rather
+// than an empty value.
+func (c *Client) GetSecret(ctx context.Context, path, key string) (string, error) {
+	data, err := c.read(ctx, path)
+	if err != nil {
+		return "", err
+	}
+
+	value, ok := data[key]
+	if !ok {
+		return "", fmt.Errorf("%w: no secret value at key %q in %q", ErrNotFound, key, path)
+	}
+
+	// A key name describes what the secret holds, so only the path is
+	// logged.
+	c.logger.DebugContext(ctx, "read secret value",
+		"path", path, "mount", c.mountPoint)
+	return coerce(value), nil
+}
+
 // read returns the raw secret values stored at path. Failures are
 // returned rather than logged, so that a caller reports them once.
 func (c *Client) read(ctx context.Context, path string) (map[string]any, error) {
@@ -258,6 +281,12 @@ func coerce(value any) string {
 	}
 
 	// The value was decoded from JSON, so it can always be encoded again.
-	encoded, _ := json.Marshal(value)
-	return string(encoded)
+	// json.Marshal would escape <, > and & inside it, which mangles a URL
+	// holding query parameters, so encoding is done with that off. An
+	// encoder ends what it writes with a newline.
+	var encoded bytes.Buffer
+	enc := json.NewEncoder(&encoded)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(value)
+	return strings.TrimSuffix(encoded.String(), "\n")
 }

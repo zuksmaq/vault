@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/zuksmaq/vault"
@@ -115,6 +116,91 @@ func TestGetSecretsCoercesNonStringValues(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("GetSecrets()[%q] = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+func TestGetSecretCoercesValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "string", value: `"hunter2"`, want: "hunter2"},
+		{name: "empty string", value: `""`, want: ""},
+		{name: "string holding a number", value: `"8080"`, want: "8080"},
+		{name: "integer", value: `8080`, want: "8080"},
+		{name: "negative integer", value: `-1`, want: "-1"},
+		{name: "large integer", value: `12345678901234567890`, want: "12345678901234567890"},
+		{name: "float", value: `1.5`, want: "1.5"},
+		{name: "true", value: `true`, want: "true"},
+		{name: "false", value: `false`, want: "false"},
+		{name: "null", value: `null`, want: "null"},
+		{name: "object", value: `{"max": 10, "min": 1}`, want: `{"max":10,"min":1}`},
+		{name: "array", value: `["a", "b"]`, want: `["a","b"]`},
+		{name: "empty object", value: `{}`, want: `{}`},
+		{
+			name:  "object holding a url",
+			value: `{"url": "https://example.test/?a=1&b=2"}`,
+			want:  `{"url":"https://example.test/?a=1&b=2"}`,
+		},
+		{
+			name:  "array holding markup",
+			value: `["<a>", "b & c"]`,
+			want:  `["<a>","b & c"]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+				writeSecret(t, w, `{"value":`+tt.value+`}`)
+			})
+
+			got, err := client.GetSecret(context.Background(), "app/config", "value")
+			if err != nil {
+				t.Fatalf("GetSecret() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("GetSecret() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetSecretMissingKey(t *testing.T) {
+	t.Parallel()
+
+	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+		writeSecret(t, w, `{"username":"app"}`)
+	})
+
+	got, err := client.GetSecret(context.Background(), "app/config", "password")
+	if !errors.Is(err, vault.ErrNotFound) {
+		t.Fatalf("GetSecret() error = %v, want %v", err, vault.ErrNotFound)
+	}
+	if got != "" {
+		t.Errorf("GetSecret() = %q, want empty string alongside the error", got)
+	}
+	// A missing key and a missing secret path are both not-found; the
+	// message is what tells a caller which it was.
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("GetSecret() error = %v, want it to name the missing key", err)
+	}
+}
+
+func TestGetSecretMissingPath(t *testing.T) {
+	t.Parallel()
+
+	client := newClient(t, vault.Config{}, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, `{"errors":[]}`)
+	})
+
+	if _, err := client.GetSecret(context.Background(), "app/missing", "password"); !errors.Is(err, vault.ErrNotFound) {
+		t.Fatalf("GetSecret() error = %v, want %v", err, vault.ErrNotFound)
 	}
 }
 
