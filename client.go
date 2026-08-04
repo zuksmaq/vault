@@ -1,5 +1,3 @@
-// Package vault reads secrets from a HashiCorp Vault KV v2 secrets
-// engine. It is read-only and always reads the latest version of a secret.
 package vault
 
 import (
