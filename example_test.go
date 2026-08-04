@@ -90,14 +90,19 @@ func ExampleNew_internalCA() {
 	_ = client
 }
 
-// client is a client built the way ExampleNew builds one. The examples for
-// the read methods share it rather than repeating construction.
-var client *vault.Client
-
 // Every secret value at a path arrives as a string, whatever its JSON
 // type: a number keeps its literal form, and an object becomes compact
 // JSON.
 func ExampleClient_GetSecrets() {
+	client, err := vault.New(vault.Config{
+		Address: "https://vault.example.com",
+		Token:   os.Getenv("VAULT_TOKEN"),
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
 	secrets, err := client.GetSecrets(context.Background(), "app/config")
 	if err != nil {
 		fmt.Println(err)
@@ -111,6 +116,15 @@ func ExampleClient_GetSecrets() {
 // ErrNotFound rather than an empty string, so a typo cannot pass for a
 // value that is legitimately empty.
 func ExampleClient_GetSecret() {
+	client, err := vault.New(vault.Config{
+		Address: "https://vault.example.com",
+		Token:   os.Getenv("VAULT_TOKEN"),
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
 	port, err := client.GetSecret(context.Background(), "app/config", "port")
 	switch {
 	case errors.Is(err, vault.ErrNotFound):
@@ -127,6 +141,15 @@ func ExampleClient_GetSecret() {
 // int and a nested value keeps its structure. A duration is declared as
 // vault.Duration, which reads "30s" as well as a count of nanoseconds.
 func ExampleClient_Unmarshal() {
+	client, err := vault.New(vault.Config{
+		Address: "https://vault.example.com",
+		Token:   os.Getenv("VAULT_TOKEN"),
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
 	var cfg struct {
 		Username string         `json:"username"`
 		Port     int            `json:"port"`
@@ -150,6 +173,15 @@ func ExampleClient_Unmarshal() {
 // errors.Is and logs something actionable. A transport failure is wrapped
 // intact rather than flattened, so a timeout still answers to errors.As.
 func Example_errors() {
+	client, err := vault.New(vault.Config{
+		Address: "https://vault.example.com",
+		Token:   os.Getenv("VAULT_TOKEN"),
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
 	secrets, err := client.GetSecrets(context.Background(), "app/config")
 	switch {
 	case errors.Is(err, vault.ErrNotFound):
@@ -177,17 +209,17 @@ type settingsLoader interface {
 	Unmarshal(ctx context.Context, path string, v any) error
 }
 
-// Settings is what the consumer reads its own configuration into.
-type Settings struct {
+// appSettings is what the consumer reads its own configuration into.
+type appSettings struct {
 	Port int `json:"port"`
 }
 
 // loadSettings is the code under test, which depends on the interface
 // rather than on this package's concrete type.
-func loadSettings(ctx context.Context, loader settingsLoader) (Settings, error) {
-	var settings Settings
+func loadSettings(ctx context.Context, loader settingsLoader) (appSettings, error) {
+	var settings appSettings
 	if err := loader.Unmarshal(ctx, "app/config", &settings); err != nil {
-		return Settings{}, fmt.Errorf("loading settings: %w", err)
+		return appSettings{}, fmt.Errorf("loading settings: %w", err)
 	}
 	return settings, nil
 }
@@ -197,7 +229,7 @@ func loadSettings(ctx context.Context, loader settingsLoader) (Settings, error) 
 type fakeLoader struct{ port int }
 
 func (f fakeLoader) Unmarshal(_ context.Context, _ string, v any) error {
-	settings, ok := v.(*Settings)
+	settings, ok := v.(*appSettings)
 	if !ok {
 		return fmt.Errorf("unexpected target %T", v)
 	}

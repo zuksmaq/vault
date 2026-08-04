@@ -100,7 +100,8 @@
 // supplied as a file path or as raw PEM bytes, the latter so a pod can
 // pass the service CA already mounted into it. Verification can be turned
 // off with Config.InsecureSkipVerify or VAULT_SKIP_VERIFY; either route
-// logs a warning at construction, which nothing suppresses.
+// warns at construction through the logger [WithLogger] supplied, and
+// nothing in this package suppresses that warning.
 //
 // # Errors
 //
@@ -149,5 +150,7 @@
 // their paths. Caching: every read reaches Vault. Secrets engines other
 // than KV v2, and Vault Enterprise namespaces. Setting environment
 // variables from a secret: secrets stay in process memory, where child
-// processes and crash reporters cannot reach them.
+// processes and crash reporters cannot reach them. OpenTelemetry metrics:
+// a client that reads a few paths at startup does not warrant them.
+// Kubernetes auth, which [WithAuthMethod] can supply in the meantime.
 package vault

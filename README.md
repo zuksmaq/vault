@@ -108,6 +108,7 @@ several environments:
 | `VAULT_ADDR` | The Vault address |
 | `VAULT_CACERT` | Path to the CA certificate |
 | `VAULT_SKIP_VERIFY` | Turns certificate verification off |
+| `VAULT_AGENT_ADDR` | An agent address, read by `vault/api` itself |
 
 Precedence runs explicit configuration, then the environment, then the
 secure default. A service that states a setting cannot be overridden by
@@ -131,8 +132,9 @@ bytes form exists so a pod can pass the service CA already mounted into
 it, with no file to manage.
 
 Verification can be turned off with `Config.InsecureSkipVerify` or with
-`VAULT_SKIP_VERIFY`. Either route logs a warning at construction, and
-nothing suppresses it.
+`VAULT_SKIP_VERIFY`. Either route warns at construction through the
+logger you supply, and nothing in this package suppresses that warning —
+so supply a logger if you want to hear about it.
 
 ## Errors
 
@@ -141,8 +143,11 @@ with `==`:
 
 - `ErrInvalidConfig` — the config cannot produce a usable client.
 - `ErrAuthFailed` — Vault rejected the credential.
-- `ErrPermissionDenied` — the role's policy does not allow the read. An
-  expired token is recovered from before this surfaces.
+- `ErrPermissionDenied` — a read Vault refused with a credential it
+  accepted. With an AppRole an expired token is recovered from before
+  this surfaces, so it means the role's policy does not allow the read;
+  with a static token it also means the token has expired, because there
+  is nothing to log in with.
 - `ErrNotFound` — no such secret path, or no such key within one. The
   message says which.
 - `ErrUnexpectedResponse` — a response shape this client does not
@@ -174,8 +179,8 @@ func loadConfig(ctx context.Context, r secretReader) (Settings, error) {
 ```
 
 `*vault.Client` satisfies such an interface without being told about it.
-Runnable versions of this and every snippet above are in the package's
-example tests.
+The package's example tests carry a runnable version of this pattern,
+fake and all, along with compiled examples of each method above.
 
 ## The mount point default
 
@@ -204,44 +209,40 @@ Two things change, and the first will not compile.
    expired token look like a network problem. Branch on the sentinels
    above instead.
 
+The TLS note in the next section applies to you too, and it is the one
+that fails on the very first connection.
+
+## Migrating from either predecessor
+
+**TLS is verified by default, so your first connection may fail.** Both
+predecessors skipped verification, so a service that relied on that will
+fail its first connection until it supplies a CA through `CACertPath` or
+`CACertPEM`, or opts out explicitly. Opting out with
+`InsecureSkipVerify` or `VAULT_SKIP_VERIFY` still works, but it is
+deliberate and it is logged.
+
 ## Migrating from the earlier Go client
 
-1. **TLS is verified by default, so your first connection may fail.**
-   Both predecessors skipped verification. If you relied on that, the
-   fix is to supply your internal CA through `CACertPath` or
-   `CACertPEM`. Opting out with `InsecureSkipVerify` or
-   `VAULT_SKIP_VERIFY` still works, but it is explicit and it is logged.
-
-2. **A token is no longer something you obtain by hand.** Supply an
+1. **A token is no longer something you obtain by hand.** Supply an
    AppRole and the client logs in for you, and logs in again when the
    token expires — the earlier client could not log in at all, so a
    human had to fetch a token first.
 
-3. **Every method takes a `context.Context`.** A slow Vault can no
+2. **Every method takes a `context.Context`.** A slow Vault can no
    longer hang your startup indefinitely.
 
-## Testing this package
+## Running the tests
 
-Two layers. The default suite fakes Vault with `httptest` and needs no
-Docker, so `go test ./...` stays usable everywhere:
+The default suite fakes Vault with `httptest` and needs no Docker. The
+tagged suite starts a real Vault in a container and needs a container
+runtime:
 
 ```bash
 go test -race ./...
-```
-
-The integration suite starts a real Vault in a container, enables
-AppRole, creates a role and reads a secret back through this package's
-own API — checking what a hand-written fake cannot: the real KV v2
-response envelope, the real AppRole login response, and the real body of
-a refusal. It needs a container runtime:
-
-```bash
 go test -tags integration -race ./...
 ```
 
-Tests never run against a real production, development or test Vault.
-Suites needing live credentials rot, leak, and fail for reasons
-unrelated to the code.
+Neither runs against a real production, development or test Vault.
 
 ## Out of scope
 
@@ -256,6 +257,10 @@ Deliberate omissions rather than gaps:
 - Secrets engines other than KV v2, and Vault Enterprise namespaces.
 - Kubernetes auth. Deferred, but `WithAuthMethod` accepts any
   `api.AuthMethod`, so it can be wired in the meantime.
+- Setting environment variables from a secret. Secrets stay in process
+  memory, out of reach of child processes and crash reporters.
+- OpenTelemetry metrics. A client that reads a few paths at startup does
+  not warrant them.
 - An exported interface, and a `Close` method. There is no background
   goroutine and nothing to release.
 
